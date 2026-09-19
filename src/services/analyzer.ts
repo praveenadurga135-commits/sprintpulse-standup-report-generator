@@ -3,6 +3,8 @@ import {
   StakeholderReportData, BurndownDayData, BlockerSeverity 
 } from '../types';
 import { StorageService } from './storage';
+import { DataValidator } from '../utils/dataValidator';
+import { Sanitizer } from '../utils/sanitizer';
 
 // Engineering semantic concept mappings
 const CONCEPT_MAPPINGS: { tag: string; terms: string[] }[] = [
@@ -435,7 +437,10 @@ export const AnalyzerService = {
   },
 
   // Generates executive Sprint Summary powered by server-side Groq LLM
-  async generateSprintSummaryWithLLM(sprint: Sprint, projectId: string): Promise<SprintSummaryData> {
+  async generateSprintSummaryWithLLM(
+    sprint: Sprint, 
+    projectId: string
+  ): Promise<{ data: SprintSummaryData; isFallback: boolean; error?: string }> {
     const updates = StorageService.getUpdates({ sprintId: sprint.id, projectId });
     const blockers = this.analyzeBlockers(sprint.id, projectId);
     const project = StorageService.getProjects().find((p) => p.id === projectId);
@@ -445,77 +450,58 @@ export const AnalyzerService = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          project,
-          sprint,
-          updates,
-          blockers,
+          project: project ? {
+            name: Sanitizer.sanitizeText(project.name),
+            description: Sanitizer.sanitizeMultiline(project.description),
+            startDate: project.startDate,
+            endDate: project.endDate,
+          } : undefined,
+          sprint: {
+            name: Sanitizer.sanitizeText(sprint.name),
+            goal: Sanitizer.sanitizeMultiline(sprint.goal),
+            startDate: sprint.startDate,
+            endDate: sprint.endDate,
+          },
+          updates: updates.map((u) => ({
+            userId: u.userId,
+            date: u.date,
+            yesterday: Sanitizer.sanitizeMultiline(u.yesterday),
+            today: Sanitizer.sanitizeMultiline(u.today),
+            blockers: Sanitizer.sanitizeMultiline(u.blockers),
+            hasBlocker: u.hasBlocker,
+          })),
+          blockers: blockers.map((b) => ({
+            title: Sanitizer.sanitizeText(b.title),
+            description: Sanitizer.sanitizeMultiline(b.description),
+            severity: b.severity,
+            status: b.status,
+            occurrencesCount: b.occurrencesCount,
+          })),
         }),
       });
 
-      if (!response.ok) {
-        throw new Error(`Server returned status ${response.status}`);
+      const res = await response.json().catch(() => ({}));
+
+      if (!response.ok || !res.success || !res.data) {
+        const errorMsg = res?.error?.message || res?.error || `Server status ${response.status}`;
+        throw new Error(errorMsg);
       }
 
-      const res = await response.json();
-      if (!res.success || !res.data) {
-        throw new Error(res.error || 'Invalid summary response from server');
-      }
-
-      const llmData = res.data;
-      const validSeverities: BlockerSeverity[] = ['Critical', 'High', 'Medium', 'Low'];
-
-      const summary: SprintSummaryData = {
-        id: `sum-${Date.now()}`,
-        projectId,
-        sprintId: sprint.id,
-        generatedAt: new Date().toISOString(),
-        overallProgress: typeof llmData.overallProgress === 'string' && llmData.overallProgress.trim().length > 0
-          ? llmData.overallProgress.trim()
-          : (updates.length === 0 ? 'No standup updates logged yet for this sprint.' : 'Team velocity actively tracking scheduled deliverables.'),
-        progressPercentage: typeof llmData.progressPercentage === 'number'
-          ? Math.max(0, Math.min(100, Math.round(llmData.progressPercentage)))
-          : (updates.length === 0 ? 0 : 70),
-        completedWork: Array.isArray(llmData.completedWork) && llmData.completedWork.length > 0
-          ? llmData.completedWork.map(String)
-          : ['No completed deliverables were reported in the submitted standup updates.'],
-        workInProgress: Array.isArray(llmData.workInProgress) && llmData.workInProgress.length > 0
-          ? llmData.workInProgress.map(String)
-          : ['No in-progress tasks were reported in the submitted standup updates.'],
-        keyBlockers: Array.isArray(llmData.keyBlockers) && llmData.keyBlockers.length > 0
-          ? llmData.keyBlockers.map((b: any) => ({
-              title: String(b.title || 'Reported Impediment'),
-              severity: validSeverities.includes(b.severity) ? b.severity : 'Medium',
-              impact: String(b.impact || 'Under assessment'),
-            }))
-          : (blockers.length > 0
-              ? blockers.slice(0, 4).map((b) => ({
-                  title: b.title,
-                  severity: b.severity,
-                  impact: b.status === 'resolved' ? 'Resolved impediment' : 'Active impediment',
-                }))
-              : []),
-        risks: Array.isArray(llmData.risks) && llmData.risks.length > 0
-          ? llmData.risks.map((r: any) => ({
-              risk: String(r.risk || 'Schedule and delivery risk'),
-              level: ['High', 'Medium', 'Low'].includes(r.level) ? r.level : 'Low',
-              mitigation: String(r.mitigation || 'Monitor daily standup reports.'),
-            }))
-          : [],
-        nextSteps: Array.isArray(llmData.nextSteps) && llmData.nextSteps.length > 0
-          ? llmData.nextSteps.map(String)
-          : ['Review incoming standup updates and verify milestone completion.'],
-      };
-
-      StorageService.saveSprintSummary(summary);
-      return summary;
+      const validation = DataValidator.validateSprintSummary(res.data, projectId, sprint.id);
+      StorageService.saveSprintSummary(validation.data);
+      return { data: validation.data, isFallback: false };
     } catch (err: any) {
       console.warn('[AnalyzerService] Remote summary generation failed, falling back to local analysis:', err?.message);
-      return this.generateSprintSummary(sprint, projectId);
+      const fallback = this.generateSprintSummary(sprint, projectId);
+      return { data: fallback, isFallback: true, error: err?.message || 'AI service unavailable' };
     }
   },
 
   // Generates executive Stakeholder Progress Report powered by server-side Groq LLM
-  async generateStakeholderReportWithLLM(sprint: Sprint, projectId: string): Promise<StakeholderReportData> {
+  async generateStakeholderReportWithLLM(
+    sprint: Sprint, 
+    projectId: string
+  ): Promise<{ data: StakeholderReportData; isFallback: boolean; error?: string }> {
     const updates = StorageService.getUpdates({ sprintId: sprint.id, projectId });
     const blockers = this.analyzeBlockers(sprint.id, projectId);
     const project = StorageService.getProjects().find((p) => p.id === projectId);
@@ -525,75 +511,50 @@ export const AnalyzerService = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          project,
-          sprint,
-          updates,
-          blockers,
+          project: project ? {
+            name: Sanitizer.sanitizeText(project.name),
+            description: Sanitizer.sanitizeMultiline(project.description),
+            startDate: project.startDate,
+            endDate: project.endDate,
+          } : undefined,
+          sprint: {
+            name: Sanitizer.sanitizeText(sprint.name),
+            goal: Sanitizer.sanitizeMultiline(sprint.goal),
+            startDate: sprint.startDate,
+            endDate: sprint.endDate,
+          },
+          updates: updates.map((u) => ({
+            userId: u.userId,
+            date: u.date,
+            yesterday: Sanitizer.sanitizeMultiline(u.yesterday),
+            today: Sanitizer.sanitizeMultiline(u.today),
+            blockers: Sanitizer.sanitizeMultiline(u.blockers),
+            hasBlocker: u.hasBlocker,
+          })),
+          blockers: blockers.map((b) => ({
+            title: Sanitizer.sanitizeText(b.title),
+            description: Sanitizer.sanitizeMultiline(b.description),
+            severity: b.severity,
+            status: b.status,
+            occurrencesCount: b.occurrencesCount,
+          })),
         }),
       });
 
-      if (!response.ok) {
-        throw new Error(`Server returned status ${response.status}`);
+      const res = await response.json().catch(() => ({}));
+
+      if (!response.ok || !res.success || !res.data) {
+        const errorMsg = res?.error?.message || res?.error || `Server status ${response.status}`;
+        throw new Error(errorMsg);
       }
 
-      const res = await response.json();
-      if (!res.success || !res.data) {
-        throw new Error(res.error || 'Invalid report response from server');
-      }
-
-      const llmData = res.data;
-      const activeBlockers = blockers.filter((b) => b.status === 'active');
-      const resolvedBlockers = blockers.filter((b) => b.status === 'resolved');
-
-      const statusVal: 'On Track' | 'At Risk' | 'Needs Attention' = 
-        ['On Track', 'At Risk', 'Needs Attention'].includes(llmData.sprintStatus)
-          ? llmData.sprintStatus
-          : (activeBlockers.length > 1 ? 'Needs Attention' : 'On Track');
-
-      const currentMetrics = Array.isArray(llmData.currentProgress) && llmData.currentProgress.length > 0
-        ? llmData.currentProgress.map((m: any) => ({
-            metric: String(m.metric || 'Milestone Metric'),
-            value: String(m.value || 'Active'),
-            status: (['positive', 'warning', 'neutral'].includes(m.status) ? m.status : 'neutral') as 'positive' | 'warning' | 'neutral',
-          }))
-        : [
-            { metric: 'Sprint Status', value: statusVal, status: statusVal === 'On Track' ? 'positive' as const : 'warning' as const },
-            { metric: 'Updates Logged', value: `${updates.length} Updates`, status: updates.length > 0 ? 'positive' as const : 'neutral' as const },
-            { metric: 'Impediments Resolved', value: `${resolvedBlockers.length} of ${blockers.length}`, status: resolvedBlockers.length > 0 ? 'positive' as const : 'neutral' as const },
-            { metric: 'Active Blockers', value: `${activeBlockers.length} Active`, status: activeBlockers.length === 0 ? 'positive' as const : 'warning' as const },
-          ];
-
-      const report: StakeholderReportData = {
-        id: `rep-${Date.now()}`,
-        projectId,
-        sprintId: sprint.id,
-        generatedAt: new Date().toISOString(),
-        sprintStatus: statusVal,
-        executiveSummary: typeof llmData.executiveSummary === 'string' && llmData.executiveSummary.trim().length > 0
-          ? llmData.executiveSummary.trim()
-          : (updates.length === 0 ? 'Executive briefing: Awaiting initial standup submissions for this sprint.' : 'Executive briefing: Sprint deliverables are progressing according to schedule.'),
-        keyAchievements: Array.isArray(llmData.keyAchievements) && llmData.keyAchievements.length > 0
-          ? llmData.keyAchievements.map(String)
-          : (updates.length > 0 ? ['Key engineering deliverables logged and tracked in sprint.'] : ['Awaiting completed tasks from engineering team.']),
-        currentProgress: currentMetrics,
-        keyRisks: Array.isArray(llmData.keyRisks) && llmData.keyRisks.length > 0
-          ? llmData.keyRisks.map(String)
-          : ['Standup cadence adherence across distributed team members.'],
-        blockers: Array.isArray(llmData.blockers) && llmData.blockers.length > 0
-          ? llmData.blockers.map(String)
-          : (activeBlockers.length > 0
-              ? activeBlockers.map((b) => `${b.title} (${b.severity}): ${b.description}`)
-              : ['No active blockers reported by team members.']),
-        nextSteps: Array.isArray(llmData.nextSteps) && llmData.nextSteps.length > 0
-          ? llmData.nextSteps.map(String)
-          : ['Continue scheduled backlog execution and validate deliverables in staging.'],
-      };
-
-      StorageService.saveStakeholderReport(report);
-      return report;
+      const validation = DataValidator.validateStakeholderReport(res.data, projectId, sprint.id);
+      StorageService.saveStakeholderReport(validation.data);
+      return { data: validation.data, isFallback: false };
     } catch (err: any) {
       console.warn('[AnalyzerService] Remote report generation failed, falling back to local analysis:', err?.message);
-      return this.generateStakeholderReport(sprint, projectId);
+      const fallback = this.generateStakeholderReport(sprint, projectId);
+      return { data: fallback, isFallback: true, error: err?.message || 'AI service unavailable' };
     }
   }
 };

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  FileText, Sparkles, CheckCircle2, Clock, AlertOctagon, 
+  Sparkles, CheckCircle2, Clock, AlertOctagon, 
   AlertTriangle, ArrowRight, Copy, Check, RefreshCw 
 } from 'lucide-react';
 import { SprintSummaryData } from '../../types';
@@ -17,6 +17,8 @@ export const SprintSummaryView: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationStep, setGenerationStep] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [isFallbackSummary, setIsFallbackSummary] = useState(false);
+
 
   // Load existing summary if available or generate initial
   useEffect(() => {
@@ -27,13 +29,17 @@ export const SprintSummaryView: React.FC = () => {
         setSummary(existing);
       } else {
         AnalyzerService.generateSprintSummaryWithLLM(currentSprint, currentProject.id)
-          .then((generated) => {
-            if (isMounted) setSummary(generated);
+          .then(({ data, isFallback }) => {
+            if (isMounted) {
+              setSummary(data);
+              setIsFallbackSummary(isFallback);
+            }
           })
           .catch(() => {
             if (isMounted) {
               const fallback = AnalyzerService.generateSprintSummary(currentSprint, currentProject.id);
               setSummary(fallback);
+              setIsFallbackSummary(true);
             }
           });
       }
@@ -48,6 +54,7 @@ export const SprintSummaryView: React.FC = () => {
 
     setIsGenerating(true);
     setGenerationStep(0);
+    setIsFallbackSummary(false);
 
     const steps = [
       'Aggregating submitted daily standups...',
@@ -65,21 +72,30 @@ export const SprintSummaryView: React.FC = () => {
     }, 450);
 
     try {
-      const res = await AnalyzerService.generateSprintSummaryWithLLM(currentSprint, currentProject.id);
+      const { data, isFallback, error } = await AnalyzerService.generateSprintSummaryWithLLM(currentSprint, currentProject.id);
       clearInterval(interval);
-      setSummary(res);
+      setSummary(data);
+      setIsFallbackSummary(isFallback);
       setIsGenerating(false);
-      toast.success(`Generated comprehensive sprint summary for ${currentSprint.name}!`, 'Sprint Summary Generated');
+      if (isFallback) {
+        toast.warning(
+          `AI service unavailable${error ? ` — ${error}` : ''}. Summary generated from local standup data.`,
+          'Local Analysis Used'
+        );
+      } else {
+        toast.success(`Generated AI sprint summary for ${currentSprint.name}!`, 'Sprint Summary Generated');
+      }
     } catch {
       clearInterval(interval);
       const fallback = AnalyzerService.generateSprintSummary(currentSprint, currentProject.id);
       setSummary(fallback);
+      setIsFallbackSummary(true);
       setIsGenerating(false);
-      toast.success(`Generated comprehensive sprint summary for ${currentSprint.name}!`, 'Sprint Summary Generated');
+      toast.warning('AI service unavailable. Summary generated from local standup data.', 'Local Analysis Used');
     }
   };
 
-  const handleCopySummary = () => {
+  const handleCopySummary = async () => {
     if (!summary) return;
 
     const formatted = `
@@ -105,10 +121,14 @@ NEXT STEPS:
 ${summary.nextSteps.map((s) => `• ${s}`).join('\n')}
     `.trim();
 
-    navigator.clipboard.writeText(formatted);
-    setCopied(true);
-    toast.success('Sprint summary copied to clipboard in clean markdown format!', 'Summary Copied');
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(formatted);
+      setCopied(true);
+      toast.success('Sprint summary copied to clipboard in clean markdown format!', 'Summary Copied');
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.warning('Could not access clipboard. Please copy manually.', 'Clipboard Error');
+    }
   };
 
   return (
@@ -121,9 +141,15 @@ ${summary.nextSteps.map((s) => `• ${s}`).join('\n')}
               <span className="text-xs font-semibold uppercase tracking-wider text-brand-600 dark:text-brand-400">
                 Synthesis & Milestone Tracking
               </span>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300">
-                Standup Data Synthesized
-              </span>
+              {isFallbackSummary ? (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                  Local Analysis
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300">
+                  AI Generated
+                </span>
+              )}
             </div>
             <h1 className="text-2xl font-extrabold text-slate-900 dark:text-white mt-0.5">
               Sprint Summary

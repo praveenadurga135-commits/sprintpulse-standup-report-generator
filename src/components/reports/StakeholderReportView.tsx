@@ -18,6 +18,7 @@ export const StakeholderReportView: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+  const [isFallbackReport, setIsFallbackReport] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -27,13 +28,17 @@ export const StakeholderReportView: React.FC = () => {
         setReport(existing);
       } else {
         AnalyzerService.generateStakeholderReportWithLLM(currentSprint, currentProject.id)
-          .then((generated) => {
-            if (isMounted) setReport(generated);
+          .then(({ data, isFallback }) => {
+            if (isMounted) {
+              setReport(data);
+              setIsFallbackReport(isFallback);
+            }
           })
           .catch(() => {
             if (isMounted) {
               const fallback = AnalyzerService.generateStakeholderReport(currentSprint, currentProject.id);
               setReport(fallback);
+              setIsFallbackReport(true);
             }
           });
       }
@@ -47,16 +52,26 @@ export const StakeholderReportView: React.FC = () => {
     if (!currentSprint || !currentProject) return;
 
     setIsGenerating(true);
+    setIsFallbackReport(false);
     try {
-      const res = await AnalyzerService.generateStakeholderReportWithLLM(currentSprint, currentProject.id);
-      setReport(res);
+      const { data, isFallback, error } = await AnalyzerService.generateStakeholderReportWithLLM(currentSprint, currentProject.id);
+      setReport(data);
+      setIsFallbackReport(isFallback);
       setIsGenerating(false);
-      toast.success('Generated executive stakeholder report ready for leadership review.', 'Report Generated');
+      if (isFallback) {
+        toast.warning(
+          `AI service unavailable${error ? ` — ${error}` : ''}. Report generated from local standup data.`,
+          'Local Analysis Used'
+        );
+      } else {
+        toast.success('Generated executive stakeholder report ready for leadership review.', 'Report Generated');
+      }
     } catch {
       const fallback = AnalyzerService.generateStakeholderReport(currentSprint, currentProject.id);
       setReport(fallback);
+      setIsFallbackReport(true);
       setIsGenerating(false);
-      toast.success('Generated executive stakeholder report ready for leadership review.', 'Report Generated');
+      toast.warning('AI service unavailable. Report generated from local standup data.', 'Local Analysis Used');
     }
   };
 
@@ -64,7 +79,7 @@ export const StakeholderReportView: React.FC = () => {
     window.print();
   };
 
-  const handleCopyReport = () => {
+  const handleCopyReport = async () => {
     if (!report) return;
 
     const markdown = `
@@ -94,10 +109,14 @@ ${report.blockers.map((b) => `• ${b}`).join('\n')}
 ${report.nextSteps.map((s) => `• ${s}`).join('\n')}
     `.trim();
 
-    navigator.clipboard.writeText(markdown);
-    setCopied(true);
-    toast.success('Stakeholder report copied to clipboard formatted for email / Notion!', 'Report Copied');
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(markdown);
+      setCopied(true);
+      toast.success('Stakeholder report copied to clipboard formatted for email / Notion!', 'Report Copied');
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.warning('Could not access clipboard. Please copy manually.', 'Clipboard Error');
+    }
   };
 
   const getStatusBadge = (status: 'On Track' | 'At Risk' | 'Needs Attention') => {
@@ -122,9 +141,15 @@ ${report.nextSteps.map((s) => `• ${s}`).join('\n')}
               <span className="text-xs font-semibold uppercase tracking-wider text-brand-600 dark:text-brand-400">
                 Executive Reporting
               </span>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300">
-                Stakeholder Ready
-              </span>
+              {isFallbackReport ? (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                  Local Analysis
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300">
+                  AI Generated
+                </span>
+              )}
             </div>
             <h1 className="text-2xl font-extrabold text-slate-900 dark:text-white mt-0.5">
               Stakeholder Progress Report

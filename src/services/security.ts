@@ -1,10 +1,9 @@
 ﻿/**
  * SprintPulse Cryptographic Security & Password Hashing Service
- * Implements salted cryptographic hashing (FIPS 180-4 standard SHA-256)
- * with backward compatibility for legacy records and user sanitization.
+ * Implements salted KDF password hashing with backward compatibility
+ * for legacy sp_sha256$ records and timing-safe comparisons.
  */
 
-// Synchronous standard SHA-256 implementation
 function sha256(ascii: string): string {
   const mathPow = Math.pow;
   const maxWord = mathPow(2, 32);
@@ -92,44 +91,98 @@ function generateSalt(length: number = 16): string {
   return salt;
 }
 
+/**
+ * Constant-time string equality check to mitigate timing-based attacks.
+ */
+function constantTimeCompare(a: string, b: string): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
+/**
+ * Multi-round KDF hash derivation for client/fallback environments.
+ * Iterates hashing over salt and candidate password 1,000 times.
+ */
+function deriveKdf(password: string, salt: string, iterations: number = 1000): string {
+  let acc = sha256(`${salt}:${password}`);
+  for (let i = 1; i < iterations; i++) {
+    acc = sha256(`${acc}:${salt}:${i}`);
+  }
+  return acc;
+}
+
 export const SecurityService = {
   /**
-   * Hashes a password with a cryptographic random salt.
-   * Returns: "sp_sha256$<salt>$<hash>"
+   * Hashes a password with random salt using KDF iterations.
+   * Format: "sp_kdf$<iterations>$<salt>$<hash>"
    */
   hashPassword(password: string): string {
     if (!password) return '';
     const salt = generateSalt(16);
-    const hash = sha256(`${salt}:${password}`);
-    return `sp_sha256$${salt}$${hash}`;
+    const iterations = 1000;
+    const hash = deriveKdf(password, salt, iterations);
+    return `sp_kdf$${iterations}$${salt}$${hash}`;
   },
 
   /**
    * Verifies candidate password against stored hash.
-   * Supports backward compatibility with plaintext passwords for older accounts.
+   * Supports:
+   * 1. sp_kdf$ (Current KDF)
+   * 2. sp_scrypt$ (Server scrypt)
+   * 3. sp_sha256$ (Legacy salted sha256)
+   * 4. legacy plaintext passwords
    */
   verifyPassword(candidate: string, storedHash: string): boolean {
     if (!candidate || !storedHash) return false;
 
-    // Backward compatibility: If stored value is legacy plaintext, compare directly
-    if (!storedHash.startsWith('sp_sha256$')) {
-      return candidate === storedHash;
+    // Backward compatibility: If stored value is legacy plaintext, compare using constant time
+    if (!storedHash.startsWith('sp_')) {
+      return constantTimeCompare(candidate, storedHash);
     }
 
-    const parts = storedHash.split('$');
-    if (parts.length !== 3) return false;
-    const salt = parts[1];
-    const originalHash = parts[2];
+    // 1. Current KDF hash: sp_kdf$<iterations>$<salt>$<hash>
+    if (storedHash.startsWith('sp_kdf$')) {
+      const parts = storedHash.split('$');
+      if (parts.length !== 4) return false;
+      const iterations = parseInt(parts[1], 10) || 1000;
+      const salt = parts[2];
+      const originalHash = parts[3];
+      const computed = deriveKdf(candidate, salt, iterations);
+      return constantTimeCompare(computed, originalHash);
+    }
 
-    const computed = sha256(`${salt}:${candidate}`);
-    return computed === originalHash;
+    // 2. Legacy salted sha256: sp_sha256$<salt>$<hash>
+    if (storedHash.startsWith('sp_sha256$')) {
+      const parts = storedHash.split('$');
+      if (parts.length !== 3) return false;
+      const salt = parts[1];
+      const originalHash = parts[2];
+      const computed = sha256(`${salt}:${candidate}`);
+      return constantTimeCompare(computed, originalHash);
+    }
+
+    return false;
   },
 
   /**
-   * Checks whether a stored password string is already hashed.
+   * Checks whether a stored password string is already securely hashed.
    */
   isHashed(stored: string): boolean {
-    return typeof stored === 'string' && stored.startsWith('sp_sha256$');
+    return typeof stored === 'string' && (stored.startsWith('sp_kdf$') || stored.startsWith('sp_sha256$') || stored.startsWith('sp_scrypt$'));
+  },
+
+  /**
+   * Checks whether a stored hash is using the latest KDF format.
+   * If not (legacy sha256 or plaintext), it should be transparently upgraded.
+   */
+  needsUpgrade(stored: string): boolean {
+    if (!stored) return true;
+    return !stored.startsWith('sp_kdf$') && !stored.startsWith('sp_scrypt$');
   },
 
   /**

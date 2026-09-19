@@ -41,8 +41,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!isValid) {
         return { success: false, error: 'Incorrect password. Please try again.' };
       }
-      // Upgrade legacy password to salted hash if needed
-      if (!SecurityService.isHashed(found.password)) {
+      // Upgrade legacy password hash to stronger KDF format if needed
+      if (SecurityService.needsUpgrade(found.password)) {
         StorageService.updatePassword(found.email, password);
       }
     }
