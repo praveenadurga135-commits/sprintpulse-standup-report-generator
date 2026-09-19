@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, UserRole } from '../types';
 import { StorageService } from '../services/storage';
+import { SecurityService } from '../services/security';
 
 interface AuthContextType {
   currentUser: User | null;
@@ -35,12 +36,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!found) {
       return { success: false, error: 'No account found with this email address.' };
     }
-    if (password && found.password && found.password !== password) {
-      return { success: false, error: 'Incorrect password. Please try again.' };
+    if (password && found.password) {
+      const isValid = SecurityService.verifyPassword(password, found.password);
+      if (!isValid) {
+        return { success: false, error: 'Incorrect password. Please try again.' };
+      }
+      // Upgrade legacy password to salted hash if needed
+      if (!SecurityService.isHashed(found.password)) {
+        StorageService.updatePassword(found.email, password);
+      }
     }
 
-    StorageService.setCurrentUser(found, rememberMe);
-    setCurrentUser(found);
+    const safeUser = SecurityService.sanitizeUser(found) as User;
+    StorageService.setCurrentUser(safeUser, rememberMe);
+    setCurrentUser(safeUser);
     return { success: true };
   };
 

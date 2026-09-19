@@ -23,7 +23,7 @@ export const CreateSprintModal: React.FC<CreateSprintModalProps> = ({ isOpen, on
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (!name.trim()) return;
@@ -31,6 +31,23 @@ export const CreateSprintModal: React.FC<CreateSprintModalProps> = ({ isOpen, on
     if (endDate < startDate) {
       setError('Sprint end date must be on or after start date.');
       return;
+    }
+
+    try {
+      const resp = await fetch('/api/validate-sprint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), startDate, endDate }),
+      });
+      if (resp.ok) {
+        const val = await resp.json();
+        if (!val.valid) {
+          setError(val.error || 'Invalid sprint configuration');
+          return;
+        }
+      }
+    } catch {
+      // fallback to client validation
     }
 
     createSprint({

@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 export interface GroqConfig {
   apiKey: string;
@@ -203,4 +204,145 @@ export async function handleLlmStatus(_req: IncomingMessage, res: ServerResponse
     configured: Boolean(config.apiKey && config.apiKey.trim().length > 0),
     model: config.model,
   });
+}
+
+export async function handleValidateProject(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    const payload = await readRequestBody(req);
+    const { name, startDate, endDate } = payload;
+    if (!name || typeof name !== 'string' || name.trim().length < 2) {
+      sendJson(res, 400, { valid: false, error: 'Project name must be at least 2 characters.' });
+      return;
+    }
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (endDate < todayStr) {
+      sendJson(res, 400, { valid: false, error: 'Project deadline cannot be in the past.' });
+      return;
+    }
+    if (endDate < startDate) {
+      sendJson(res, 400, { valid: false, error: 'Project end date must be on or after start date.' });
+      return;
+    }
+    sendJson(res, 200, { valid: true });
+  } catch (err: any) {
+    sendJson(res, 400, { valid: false, error: err?.message || 'Invalid payload' });
+  }
+}
+
+export async function handleValidateSprint(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    const payload = await readRequestBody(req);
+    const { name, startDate, endDate } = payload;
+    if (!name || typeof name !== 'string' || name.trim().length < 2) {
+      sendJson(res, 400, { valid: false, error: 'Sprint name must be at least 2 characters.' });
+      return;
+    }
+    if (endDate < startDate) {
+      sendJson(res, 400, { valid: false, error: 'Sprint end date must be on or after start date.' });
+      return;
+    }
+    sendJson(res, 200, { valid: true });
+  } catch (err: any) {
+    sendJson(res, 400, { valid: false, error: err?.message || 'Invalid payload' });
+  }
+}
+
+export async function handleValidateStandup(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    const payload = await readRequestBody(req);
+    const { projectId, sprintId, userId, yesterday, today, blockers } = payload;
+    if (!projectId || !sprintId || !userId) {
+      sendJson(res, 400, { valid: false, error: 'Project, sprint, and user credentials required.' });
+      return;
+    }
+    const yLen = (yesterday || '').length;
+    const tLen = (today || '').length;
+    const bLen = (blockers || '').length;
+    if (yLen > 5000 || tLen > 5000 || bLen > 5000) {
+      sendJson(res, 400, { valid: false, error: 'Standup update content exceeds maximum allowed length.' });
+      return;
+    }
+    sendJson(res, 200, { valid: true });
+  } catch (err: any) {
+    sendJson(res, 400, { valid: false, error: err?.message || 'Invalid payload' });
+  }
+}
+
+export async function handleAuthHash(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    const payload = await readRequestBody(req);
+    const { password } = payload;
+    if (!password || typeof password !== 'string') {
+      sendJson(res, 400, { error: 'Password is required' });
+      return;
+    }
+    const salt = crypto.randomBytes(8).toString('hex');
+    const hash = crypto.createHash('sha256').update(`${salt}:${password}`).digest('hex');
+    sendJson(res, 200, { hash: `sp_sha256$${salt}$${hash}` });
+  } catch (err: any) {
+    sendJson(res, 500, { error: err?.message || 'Hashing error' });
+  }
+}
+
+export async function handleAuthVerify(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    const payload = await readRequestBody(req);
+    const { candidate, storedHash } = payload;
+    if (!candidate || !storedHash) {
+      sendJson(res, 400, { valid: false, error: 'Candidate password and stored hash required' });
+      return;
+    }
+    if (!storedHash.startsWith('sp_sha256$')) {
+      sendJson(res, 200, { valid: candidate === storedHash });
+      return;
+    }
+    const parts = storedHash.split('$');
+    if (parts.length !== 3) {
+      sendJson(res, 400, { valid: false, error: 'Malformed hash' });
+      return;
+    }
+    const salt = parts[1];
+    const originalHash = parts[2];
+    const computed = crypto.createHash('sha256').update(`${salt}:${candidate}`).digest('hex');
+    sendJson(res, 200, { valid: computed === originalHash });
+  } catch (err: any) {
+    sendJson(res, 500, { valid: false, error: err?.message || 'Verification error' });
+  }
+}
+
+export async function handleApiRequest(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+  const url = req.url?.split('?')[0] || '';
+  if (req.method === 'POST' && url === '/api/generate-summary') {
+    await handleGenerateSummary(req, res);
+    return true;
+  }
+  if (req.method === 'POST' && url === '/api/generate-report') {
+    await handleGenerateReport(req, res);
+    return true;
+  }
+  if (req.method === 'GET' && url === '/api/llm-status') {
+    await handleLlmStatus(req, res);
+    return true;
+  }
+  if (req.method === 'POST' && url === '/api/validate-project') {
+    await handleValidateProject(req, res);
+    return true;
+  }
+  if (req.method === 'POST' && url === '/api/validate-sprint') {
+    await handleValidateSprint(req, res);
+    return true;
+  }
+  if (req.method === 'POST' && url === '/api/validate-standup') {
+    await handleValidateStandup(req, res);
+    return true;
+  }
+  if (req.method === 'POST' && url === '/api/auth/hash') {
+    await handleAuthHash(req, res);
+    return true;
+  }
+  if (req.method === 'POST' && url === '/api/auth/verify') {
+    await handleAuthVerify(req, res);
+    return true;
+  }
+  return false;
 }

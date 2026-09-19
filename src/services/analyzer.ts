@@ -4,78 +4,128 @@ import {
 } from '../types';
 import { StorageService } from './storage';
 
-// Semantic cluster themes for engineering blockers
-interface BlockerClusterDef {
-  title: string;
-  category: string;
-  defaultSeverity: BlockerSeverity;
-  keywords: string[];
-}
-
-const KNOWN_CLUSTERS: BlockerClusterDef[] = [
+// Engineering semantic concept mappings
+const CONCEPT_MAPPINGS: { tag: string; terms: string[] }[] = [
   {
-    title: 'Staging Environment Access',
-    category: 'Infrastructure & Access',
-    defaultSeverity: 'High',
-    keywords: ['staging', 'credential', 'credentials', 'iam', 'vault', 'access', 'secret', 'cluster secret', 'permission', 'permissions'],
+    tag: 'api_backend',
+    terms: ['backend', 'api', 'apis', 'endpoint', 'endpoints', 'microservice', 'microservices', 'server', 'rest', 'graphql', 'grpc', 'route', 'routes', 'controller']
   },
   {
-    title: 'Payment Gateway Sandbox Reliability',
-    category: 'External Dependencies',
-    defaultSeverity: 'Critical',
-    keywords: ['payment', 'gateway', 'sandbox', 'webhook', '3d secure', '3ds', 'provider', 'capture', 'transaction', 'outage', '502'],
+    tag: 'access_auth',
+    terms: ['access', 'permission', 'permissions', 'credential', 'credentials', 'token', 'tokens', 'iam', 'vault', 'key', 'keys', 'secret', 'secrets', 'privilege', 'privileges', 'auth', 'authentication', 'authorization', 'login', 'oauth', 'jwt', 'forbidden', 'unauthorized', '403', '401']
   },
   {
-    title: 'Code Review Bottleneck',
-    category: 'Team Workflow',
-    defaultSeverity: 'Medium',
-    keywords: ['code review', 'pr', 'pull request', 'review', '#142', 'senior backend', 'waiting for pr', 'approval'],
+    tag: 'delay_pending',
+    terms: ['waiting', 'pending', 'blocked', 'blocking', 'delay', 'delayed', 'latency', 'slow', 'unresponsive', 'unavailable', 'down', 'outage', 'hang', 'hanging', 'failing', 'failure', 'error', '500', '502', '503']
   },
   {
-    title: 'Production Infrastructure Quotas & Capacity',
-    category: 'Cloud Operations',
-    defaultSeverity: 'Low',
-    keywords: ['capacity', 'limits', 'quota', 'finance', 'budget', 'cluster capacity', 'infrastructure scaling'],
+    tag: 'infra_env',
+    terms: ['staging', 'sandbox', 'cluster', 'environment', 'env', 'deployment', 'deploy', 'pipeline', 'ci/cd', 'docker', 'k8s', 'kubernetes', 'cloud', 'aws', 'gcp', 'azure']
   },
   {
-    title: 'Cache Invalidation & Cluster Alerts',
-    category: 'Database & Caching',
-    defaultSeverity: 'Medium',
-    keywords: ['redis', 'cache', 'invalidation', 'memory alert', 'eviction', 'lag'],
+    tag: 'payment_gw',
+    terms: ['payment', 'payments', 'gateway', 'stripe', 'paypal', 'webhook', 'webhooks', '3ds', '3d secure', 'transaction', 'checkout', 'billing', 'invoice']
   },
   {
-    title: 'Cross-Service Authentication & Token Renewal',
-    category: 'Security Architecture',
-    defaultSeverity: 'High',
-    keywords: ['auth', 'authentication', 'jwt', 'token', 'session', 'oauth', 'privilege'],
+    tag: 'database_cache',
+    terms: ['database', 'db', 'redis', 'postgres', 'postgresql', 'mysql', 'sql', 'query', 'migration', 'migrations', 'cache', 'caching', 'invalidation', 'schema']
   },
+  {
+    tag: 'code_review',
+    terms: ['review', 'reviews', 'pr', 'prs', 'pull request', 'merge', 'code review', 'approval', 'approvals']
+  },
+  {
+    tag: 'frontend_ui',
+    terms: ['frontend', 'ui', 'ux', 'css', 'style', 'styling', 'component', 'components', 'layout', 'responsive', 'modal', 'screen', 'render', 'rendering']
+  }
 ];
 
-// Calculate Jaccard similarity & keyword overlap between two text strings
-function calculateSimilarity(textA: string, textB: string): number {
-  const clean = (str: string) =>
-    str
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .filter((w) => w.length > 2);
+// Stop words that carry little conceptual meaning
+const STOP_WORDS = new Set([
+  'a', 'about', 'above', 'after', 'again', 'against', 'all', 'am', 'an', 'and', 'any', 'are', 'aren',
+  'as', 'at', 'be', 'because', 'been', 'before', 'being', 'below', 'between', 'both', 'but', 'by',
+  'can', 'cannot', 'cant', 'could', 'did', 'do', 'does', 'doing', 'down', 'during', 'each', 'few',
+  'for', 'from', 'further', 'had', 'has', 'have', 'having', 'he', 'her', 'here', 'hers', 'herself',
+  'him', 'himself', 'his', 'how', 'i', 'im', 'if', 'in', 'into', 'is', 'it', 'its', 'itself', 'just',
+  'me', 'more', 'most', 'my', 'myself', 'no', 'nor', 'not', 'now', 'of', 'off', 'on', 'once', 'only',
+  'or', 'other', 'our', 'ours', 'ourselves', 'out', 'over', 'own', 'same', 'so', 'some', 'such',
+  'than', 'that', 'the', 'their', 'theirs', 'them', 'themselves', 'then', 'there', 'these', 'they',
+  'this', 'those', 'through', 'to', 'too', 'under', 'until', 'up', 'very', 'was', 'we', 'were',
+  'what', 'when', 'where', 'which', 'while', 'who', 'whom', 'why', 'with', 'would', 'you', 'your',
+  'yours', 'yourself', 'yourselves', 'still', 'required', 'needing', 'needs', 'needed'
+]);
 
-  const wordsA = new Set(clean(textA));
-  const wordsB = new Set(clean(textB));
+function extractSemanticSignature(text: string): { concepts: Set<string>; substantiveTokens: Set<string> } {
+  const clean = text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
 
-  if (wordsA.size === 0 || wordsB.size === 0) return 0;
+  const substantiveTokens = new Set(clean);
+  const concepts = new Set<string>();
 
-  let intersection = 0;
-  wordsA.forEach((w) => {
-    if (wordsB.has(w)) intersection++;
+  const lowerText = text.toLowerCase();
+  for (const mapping of CONCEPT_MAPPINGS) {
+    for (const term of mapping.terms) {
+      if (lowerText.includes(term)) {
+        concepts.add(mapping.tag);
+        break;
+      }
+    }
+  }
+
+  return { concepts, substantiveTokens };
+}
+
+function calculateSemanticBlockerSimilarity(textA: string, textB: string): number {
+  const sigA = extractSemanticSignature(textA);
+  const sigB = extractSemanticSignature(textB);
+
+  let conceptIntersection = 0;
+  sigA.concepts.forEach((c) => {
+    if (sigB.concepts.has(c)) conceptIntersection++;
   });
+  const totalConcepts = sigA.concepts.size + sigB.concepts.size;
+  const conceptScore = totalConcepts > 0 ? (2 * conceptIntersection) / totalConcepts : 0;
 
-  const union = new Set([...wordsA, ...wordsB]).size;
-  return intersection / union;
+  let tokenIntersection = 0;
+  sigA.substantiveTokens.forEach((t) => {
+    if (sigB.substantiveTokens.has(t)) tokenIntersection++;
+  });
+  const tokenUnion = new Set([...sigA.substantiveTokens, ...sigB.substantiveTokens]).size;
+  const tokenScore = tokenUnion > 0 ? tokenIntersection / tokenUnion : 0;
+
+  // High confidence match if sharing 2+ domain concepts (e.g. api_backend + access_auth)
+  if (conceptIntersection >= 2) {
+    return 0.85;
+  }
+
+  return 0.65 * conceptScore + 0.35 * tokenScore;
+}
+
+function generateBlockerTitle(sampleText: string, concepts: Set<string>): string {
+  if (concepts.has('api_backend') && concepts.has('access_auth')) {
+    return 'Backend API Access';
+  }
+  if (concepts.has('payment_gw')) {
+    return 'Payment Gateway Integration';
+  }
+  if (concepts.has('database_cache')) {
+    return 'Database & Cache Reliability';
+  }
+  if (concepts.has('code_review')) {
+    return 'Code Review Turnaround';
+  }
+  if (concepts.has('infra_env') && concepts.has('access_auth')) {
+    return 'Staging Environment Access';
+  }
+  const clean = sampleText.trim().replace(/^blocker(s)?\s*[:\-]?\s*/i, '');
+  return clean.length > 50 ? clean.slice(0, 47) + '...' : clean;
 }
 
 export const AnalyzerService = {
-  // Analyzes all daily updates in a sprint and clusters semantically similar blockers
+  // Analyzes all daily updates in a sprint and clusters semantically similar blockers across days
   analyzeBlockers(sprintId: string, projectId: string): SemanticBlocker[] {
     const updates = StorageService.getUpdates({ sprintId, projectId });
     const blockerUpdates = updates.filter((u) => u.hasBlocker && u.blockers && u.blockers.trim().length > 3);
@@ -91,64 +141,35 @@ export const AnalyzerService = {
       memberIds: Set<string>;
       dates: string[];
       sampleTexts: string[];
+      concepts: Set<string>;
     }[] = [];
 
     blockerUpdates.forEach((upd) => {
-      const text = upd.blockers.toLowerCase();
-      let matchedCluster = false;
+      const sig = extractSemanticSignature(upd.blockers);
 
-      // 1. Check known semantic cluster definitions
-      for (const def of KNOWN_CLUSTERS) {
-        const matchesCount = def.keywords.filter((kw) => text.includes(kw)).length;
-        if (matchesCount >= 1) {
-          let target = clusters.find((c) => c.title === def.title);
-          if (!target) {
-            target = {
-              title: def.title,
-              description: `Recurring blocker identified across team standups affecting ${def.category.toLowerCase()}.`,
-              severity: def.defaultSeverity,
-              updateIds: [],
-              memberIds: new Set(),
-              dates: [],
-              sampleTexts: [],
-            };
-            clusters.push(target);
-          }
-          target.updateIds.push(upd.id);
-          target.memberIds.add(upd.userId);
-          target.dates.push(upd.date);
-          target.sampleTexts.push(upd.blockers);
-          matchedCluster = true;
-          break;
-        }
-      }
+      // Search for an existing cluster with high semantic similarity
+      let matchedCluster = clusters.find((c) => {
+        return c.sampleTexts.some((sample) => calculateSemanticBlockerSimilarity(sample, upd.blockers) >= 0.35);
+      });
 
-      // 2. Fallback: Semantic string similarity grouping with other unclustered updates
-      if (!matchedCluster) {
-        let bestGroup = clusters.find((c) => {
-          return c.sampleTexts.some((sample) => calculateSimilarity(sample, upd.blockers) > 0.35);
+      if (matchedCluster) {
+        matchedCluster.updateIds.push(upd.id);
+        matchedCluster.memberIds.add(upd.userId);
+        matchedCluster.dates.push(upd.date);
+        matchedCluster.sampleTexts.push(upd.blockers);
+        sig.concepts.forEach((cp) => matchedCluster!.concepts.add(cp));
+      } else {
+        const title = generateBlockerTitle(upd.blockers, sig.concepts);
+        clusters.push({
+          title,
+          description: upd.blockers,
+          severity: 'Medium',
+          updateIds: [upd.id],
+          memberIds: new Set([upd.userId]),
+          dates: [upd.date],
+          sampleTexts: [upd.blockers],
+          concepts: sig.concepts,
         });
-
-        if (bestGroup) {
-          bestGroup.updateIds.push(upd.id);
-          bestGroup.memberIds.add(upd.userId);
-          bestGroup.dates.push(upd.date);
-          bestGroup.sampleTexts.push(upd.blockers);
-        } else {
-          // Create new dynamic cluster
-          const shortTitle = upd.blockers.length > 50 
-            ? upd.blockers.slice(0, 47) + '...'
-            : upd.blockers;
-          clusters.push({
-            title: shortTitle,
-            description: upd.blockers,
-            severity: 'Medium',
-            updateIds: [upd.id],
-            memberIds: new Set([upd.userId]),
-            dates: [upd.date],
-            sampleTexts: [upd.blockers],
-          });
-        }
       }
     });
 
@@ -172,7 +193,7 @@ export const AnalyzerService = {
         title: c.title,
         description: existing?.description || c.description,
         severity: existing?.severity || calculatedSeverity,
-        status: existing?.status || (occurrences >= 4 ? 'resolved' : 'active'), // Default realistic status
+        status: existing?.status || 'active', // Real state: stays active until manager marks resolved
         occurrencesCount: occurrences,
         affectedMemberIds: Array.from(c.memberIds),
         firstDetectedDate: c.dates[0] || new Date().toISOString().split('T')[0],
@@ -264,16 +285,16 @@ export const AnalyzerService = {
     const activeBlockers = blockers.filter((b) => b.status === 'active');
     const resolvedBlockers = blockers.filter((b) => b.status === 'resolved');
 
-    const totalExpectedUpdates = Math.max(updates.length, 14);
+    const approvedMembers = StorageService.getMemberships(projectId).filter((m) => m.status === 'approved');
+    const memberCount = Math.max(1, approvedMembers.length);
+    const totalWorkingDays = sprint.totalWorkingDays || 10;
+    const totalExpectedUpdates = memberCount * totalWorkingDays;
     const submissionRate = updates.length === 0 ? 0 : Math.min(100, Math.round((updates.length / totalExpectedUpdates) * 100));
     
-    // Dynamic progress calculation based on real standup volume and blockers
+    // Dynamic progress calculation based on real standup volume and working days
     const progressPercentage = updates.length === 0
       ? 0
-      : Math.min(
-          95,
-          Math.max(20, Math.round(45 + (resolvedBlockers.length * 10) - (activeBlockers.length * 8) + (updates.length * 3)))
-        );
+      : Math.min(100, Math.max(5, Math.round((updates.length / totalExpectedUpdates) * 100)));
 
     const keyBlockersList = blockers.map((b) => ({
       title: b.title,
@@ -306,14 +327,9 @@ export const AnalyzerService = {
         }))
       : [
           {
-            risk: 'Standup update frequency and cadence drift',
+            risk: 'No active blockers or impediments reported in current updates',
             level: 'Low' as const,
-            mitigation: 'Encourage prompt daily standup submissions via voice or text input across all active engineers.'
-          },
-          {
-            risk: 'Cross-team code review turnaround latency',
-            level: 'Medium' as const,
-            mitigation: 'Establish dedicated morning review slots to unblock pending PRs.'
+            mitigation: 'Continue scheduled sprint execution and maintain regular standup submissions.'
           }
         ];
 
@@ -337,8 +353,8 @@ export const AnalyzerService = {
       generatedAt: new Date().toISOString(),
       overallProgress: narrativeTemplates[variationIndex],
       progressPercentage,
-      completedWork: completedWork.length > 0 ? completedWork.slice(0, 6) : ['Awaiting completed standup tasks from team members'],
-      workInProgress: workInProgress.length > 0 ? workInProgress.slice(0, 6) : ['Awaiting active in-progress tasks from team members'],
+      completedWork: completedWork.length > 0 ? completedWork.slice(0, 6) : ['No completed deliverables reported yet'],
+      workInProgress: workInProgress.length > 0 ? workInProgress.slice(0, 6) : ['No in-progress tasks reported yet'],
       keyBlockers: keyBlockersList.slice(0, 4),
       risks: risks.slice(0, 3),
       nextSteps,
@@ -403,13 +419,10 @@ export const AnalyzerService = {
       ],
       keyRisks: activeBlockers.length > 0
         ? activeBlockers.map((b) => `${b.title} (${b.severity}): ${b.description}`)
-        : [
-            'Timely standup submissions: Team adherence is critical for accurate sprint forecasting.',
-            'Deployment clearance: Staging validation will proceed upon milestone completions.'
-          ],
+        : ['No active blockers or critical delivery risks reported in submitted standup updates.'],
       blockers: activeBlockers.length > 0 
         ? activeBlockers.map(b => `${b.title} (${b.severity} priority) - ${b.description}`)
-        : ['All primary blockers have been resolved by the engineering team.'],
+        : ['No active blockers reported by team members.'],
       nextSteps: [
         'Review ongoing standup updates and address any newly flagged impediments.',
         'Validate delivered milestones in staging environment.',

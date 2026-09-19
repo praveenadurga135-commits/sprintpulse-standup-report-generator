@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { handleGenerateSummary, handleGenerateReport, handleLlmStatus } from './server/groqProxy.ts';
+import { handleApiRequest } from './server/groqProxy.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,18 +21,8 @@ const MIME_TYPES = {
 };
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === 'POST' && req.url === '/api/generate-summary') {
-    await handleGenerateSummary(req, res);
-    return;
-  }
-  if (req.method === 'POST' && req.url === '/api/generate-report') {
-    await handleGenerateReport(req, res);
-    return;
-  }
-  if (req.method === 'GET' && req.url === '/api/llm-status') {
-    await handleLlmStatus(req, res);
-    return;
-  }
+  const handled = await handleApiRequest(req, res);
+  if (handled) return;
 
   // Serve static dist files if dist exists
   let filePath = path.join(DIST_DIR, req.url === '/' ? 'index.html' : req.url.split('?')[0]);

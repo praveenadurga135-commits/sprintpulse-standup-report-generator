@@ -2,6 +2,7 @@ import {
   User, Project, ProjectMembership, Sprint, DailyUpdate, 
   SemanticBlocker, SprintSummaryData, StakeholderReportData 
 } from '../types';
+import { SecurityService } from './security';
 
 const STORAGE_KEYS = {
   USERS: 'sp_users',
@@ -40,6 +41,24 @@ export const StorageService = {
   // Safe backward compatibility normalization
   normalizeStoredData() {
     try {
+      // 0. User password normalization (hashing plaintext passwords)
+      const rawUsers = localStorage.getItem(STORAGE_KEYS.USERS);
+      if (rawUsers) {
+        let users: User[] = JSON.parse(rawUsers);
+        if (Array.isArray(users)) {
+          let updated = false;
+          users.forEach((u) => {
+            if (u.password && !SecurityService.isHashed(u.password)) {
+              u.password = SecurityService.hashPassword(u.password);
+              updated = true;
+            }
+          });
+          if (updated) {
+            localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
+          }
+        }
+      }
+
       // 1. Projects normalization
       const rawProjects = localStorage.getItem(STORAGE_KEYS.PROJECTS);
       if (rawProjects) {
@@ -151,7 +170,7 @@ export const StorageService = {
     const users = this.getUsers();
     const userIndex = users.findIndex((u) => u.email.toLowerCase() === email.toLowerCase());
     if (userIndex === -1) return false;
-    users[userIndex].password = newPassword;
+    users[userIndex].password = SecurityService.hashPassword(newPassword);
     localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
     notifyListeners();
     return true;
@@ -171,7 +190,7 @@ export const StorageService = {
     } else {
       notifyListeners();
     }
-    return updated;
+    return SecurityService.sanitizeUser(updated) as User;
   },
 
   // User Management
@@ -181,7 +200,8 @@ export const StorageService = {
   },
 
   getUser(id: string): User | undefined {
-    return this.getUsers().find((u) => u.id === id);
+    const u = this.getUsers().find((x) => x.id === id);
+    return u ? (SecurityService.sanitizeUser(u) as User) : undefined;
   },
 
   getCurrentUser(): User | null {
@@ -189,7 +209,8 @@ export const StorageService = {
     const raw = localStorage.getItem(STORAGE_KEYS.CURRENT_USER) || sessionStorage.getItem(STORAGE_KEYS.CURRENT_USER);
     if (!raw) return null;
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      return SecurityService.sanitizeUser(parsed) as User;
     } catch {
       return null;
     }
@@ -197,11 +218,12 @@ export const StorageService = {
 
   setCurrentUser(user: User | null, rememberMe: boolean = true) {
     if (user) {
+      const safeUser = SecurityService.sanitizeUser(user);
       if (rememberMe) {
-        localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(user));
+        localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(safeUser));
         sessionStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
       } else {
-        sessionStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(user));
+        sessionStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(safeUser));
         localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
       }
     } else {
@@ -213,15 +235,23 @@ export const StorageService = {
 
   registerUser(userData: Omit<User, 'id'>, rememberMe: boolean = true): User {
     const users = this.getUsers();
+    const rawPass = userData.password || 'password123';
+    const hashed = SecurityService.isHashed(rawPass) 
+      ? rawPass 
+      : SecurityService.hashPassword(rawPass);
+
     const newUser: User = {
       ...userData,
+      password: hashed,
       id: `usr-${Date.now()}`,
     };
     users.push(newUser);
     localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
-    this.setCurrentUser(newUser, rememberMe);
+
+    const safeUser = SecurityService.sanitizeUser(newUser) as User;
+    this.setCurrentUser(safeUser, rememberMe);
     notifyListeners();
-    return newUser;
+    return safeUser;
   },
 
   // Project Management

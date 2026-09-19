@@ -151,7 +151,7 @@ ${summary.nextSteps.map((s) => `• ${s}`).join('\n')}
               className="flex items-center gap-2 px-5 py-2.5 bg-brand-600 hover:bg-brand-700 disabled:opacity-60 text-white text-xs font-bold rounded-xl shadow-md shadow-brand-600/20 transition-all hover:scale-[1.02]"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isGenerating ? 'animate-spin' : ''}`} />
-              <span>{isGenerating ? 'Analyzing Updates...' : 'Generate Sprint Summary'}</span>
+              <span>{isGenerating ? 'Analyzing Updates...' : (summary ? 'Regenerate Summary' : 'Generate Sprint Summary')}</span>
             </button>
           </div>
         </div>

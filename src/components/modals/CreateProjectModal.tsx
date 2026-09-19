@@ -24,7 +24,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, 
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (!name.trim()) return;
@@ -37,6 +37,23 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, 
     if (endDate < startDate) {
       setError('Project end date must be on or after start date.');
       return;
+    }
+
+    try {
+      const resp = await fetch('/api/validate-project', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), startDate, endDate }),
+      });
+      if (resp.ok) {
+        const val = await resp.json();
+        if (!val.valid) {
+          setError(val.error || 'Invalid project configuration');
+          return;
+        }
+      }
+    } catch {
+      // fallback to client-side validation
     }
 
     const project = createProject({

@@ -1,13 +1,14 @@
-import React, { useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { 
   CheckCircle2, Clock, Flame, AlertOctagon, CheckSquare, 
   ArrowRight, Calendar, Layers, ShieldCheck, Sparkles, 
-  Plus, FolderKanban 
+  Plus, FolderKanban, Users 
 } from 'lucide-react';
 import { NavTab } from '../layout/Sidebar';
 import { useAuth } from '../../context/AuthContext';
 import { useProject } from '../../context/ProjectContext';
 import { StorageService } from '../../services/storage';
+import { UserAvatar } from '../common/UserAvatar';
 
 interface MemberDashboardProps {
   onNavigate: (tab: NavTab) => void;
@@ -20,8 +21,25 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
 }) => {
   const { currentUser } = useAuth();
   const { currentProject, currentSprint } = useProject();
+  const [updateFilter, setUpdateFilter] = useState<'team' | 'mine'>('team');
 
   const todayStr = new Date().toISOString().split('T')[0];
+
+  const allUsers = useMemo(() => StorageService.getUsers(), []);
+  const userMap = useMemo(() => {
+    const map = new Map<string, any>();
+    allUsers.forEach((u) => map.set(u.id, u));
+    return map;
+  }, [allUsers]);
+
+  // Team updates in current project
+  const teamUpdates = useMemo(() => {
+    if (!currentProject) return [];
+    return StorageService.getUpdates({
+      projectId: currentProject.id,
+      sprintId: currentSprint?.id || undefined,
+    });
+  }, [currentProject?.id, currentSprint?.id]);
 
   // User's own updates
   const myUpdates = useMemo(() => {
@@ -31,6 +49,8 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
       userId: currentUser.id,
     });
   }, [currentUser?.id, currentProject?.id]);
+
+  const displayedUpdates = updateFilter === 'team' ? teamUpdates : myUpdates;
 
   // Today's submission status
   const todayUpdate = useMemo(() => {
@@ -249,40 +269,80 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
 
       {/* Two Column: Personal Recent Updates & Project Blockers */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* My Recent Updates */}
+        {/* Team & Personal Standups */}
         <div className="p-6 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
-              <Clock className="w-4 h-4 text-brand-600" />
-              <span>My Standup History</span>
-            </h3>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Clock className="w-4 h-4 text-brand-600 flex-shrink-0" />
+              <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5 text-xs font-semibold">
+                <button
+                  onClick={() => setUpdateFilter('team')}
+                  className={`px-2.5 py-1 rounded-md transition-all ${
+                    updateFilter === 'team'
+                      ? 'bg-white dark:bg-slate-700 text-brand-600 dark:text-brand-400 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                  }`}
+                >
+                  Team Updates ({teamUpdates.length})
+                </button>
+                <button
+                  onClick={() => setUpdateFilter('mine')}
+                  className={`px-2.5 py-1 rounded-md transition-all ${
+                    updateFilter === 'mine'
+                      ? 'bg-white dark:bg-slate-700 text-brand-600 dark:text-brand-400 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                  }`}
+                >
+                  My Updates ({myUpdates.length})
+                </button>
+              </div>
+            </div>
             <button
               onClick={() => onNavigate('mem-updates')}
-              className="text-xs text-brand-600 dark:text-brand-400 hover:underline font-semibold"
+              className="text-xs text-brand-600 dark:text-brand-400 hover:underline font-semibold self-end sm:self-auto"
             >
-              View All ({myUpdates.length})
+              View Timeline →
             </button>
           </div>
 
           <div className="space-y-3">
-            {myUpdates.slice(0, 3).map((u) => (
-              <div
-                key={u.id}
-                className="p-3.5 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200/70 dark:border-slate-700/60 text-xs space-y-1.5"
-              >
-                <div className="flex items-center justify-between text-slate-400 font-mono text-[11px]">
-                  <span>{u.date}</span>
-                  {u.hasBlocker ? (
-                    <span className="text-rose-600 dark:text-rose-400 font-sans font-bold">Impediment</span>
-                  ) : (
-                    <span className="text-emerald-600 dark:text-emerald-400 font-sans">Clear</span>
-                  )}
-                </div>
-                <p className="text-slate-700 dark:text-slate-300 line-clamp-2">
-                  {u.yesterday}
-                </p>
+            {displayedUpdates.length === 0 ? (
+              <div className="p-6 text-center rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-dashed border-slate-200 dark:border-slate-700 text-xs text-slate-400">
+                {updateFilter === 'team'
+                  ? 'No standup updates logged yet by project teammates for this sprint.'
+                  : 'You have not logged any standup updates for this project yet.'}
               </div>
-            ))}
+            ) : (
+              displayedUpdates.slice(0, 3).map((u) => {
+                const author = userMap.get(u.userId);
+                return (
+                  <div
+                    key={u.id}
+                    className="p-3.5 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200/70 dark:border-slate-700/60 text-xs space-y-2"
+                  >
+                    <div className="flex items-center justify-between text-slate-400 font-mono text-[11px]">
+                      <div className="flex items-center gap-2">
+                        <UserAvatar name={author?.name} avatarUrl={author?.avatar} size="xs" />
+                        <span className="font-semibold text-slate-800 dark:text-slate-200 font-sans">
+                          {author?.name || 'Engineer'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span>{u.date}</span>
+                        {u.hasBlocker ? (
+                          <span className="text-rose-600 dark:text-rose-400 font-sans font-bold">Impediment</span>
+                        ) : (
+                          <span className="text-emerald-600 dark:text-emerald-400 font-sans">Clear</span>
+                        )}
+                      </div>
+                    </div>
+                    <p className="text-slate-700 dark:text-slate-300 line-clamp-2">
+                      {u.yesterday || u.today}
+                    </p>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
 
